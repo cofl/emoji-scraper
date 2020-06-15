@@ -1,0 +1,16 @@
+{
+    "compilerOptions": {
+        "target": "ES2019",
+        "module": "CommonJS",
+        "esModuleInterop": true,
+        "declaration": true,
+
+        "strict": true,
+        "strictNullChecks": true,
+        "forceConsistentCasingInFileNames": true,
+        "newLine": "lf",
+
+        "outDir": "lib",
+        "rootDir": "src"
+    }
+}
