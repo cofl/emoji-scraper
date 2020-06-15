@@ -1,14 +1,22 @@
 import { Client, TextChannel, Message } from "discord.js";
 import arg from "arg";
+import { resolve } from "path";
+import { readFileSync, existsSync, writeFileSync } from "fs";
 
 const args = arg({
     "--login-token": String,
     "--guild-id": String,
+    "--db-path": String,
 
     "-l": "--login-token",
     "-g": "--guild-id"
 });
-
+const dbPath = resolve(process.cwd(), args["--db-path"] || './emoji.json');
+const db: Record<string, { emoji: Record<string, number>, lastMessage?: string, complete?: boolean, name?: string }> = existsSync(dbPath)
+        ? JSON.parse(readFileSync(dbPath, { encoding: 'utf8' }))
+        : {};
+const emojiRegex = /<[^:]*:[^:]+:\d+>/g;
+const emojiRegexGroups = /<[^:]*:([^:]+):(\d+)>/;
 (async function test(token, guildId){
     if(!token)
         throw "Missing login token.";
@@ -17,34 +25,58 @@ const args = arg({
     const client = new Client();
     await client.login(token);
     await new Promise(resolve => setTimeout(resolve, 5000));
-    const emojiRegex = /<[^:]*:[^:]+:\d+>/g;
-    const emojiRegexGroups = /<[^:]*:([^:]+):(\d+)>/;
     const guild = client.guilds.resolve(guildId);
     if(!guild)
         throw "null guild";
-    const emoji: Record<string, number> = {};
-    for(const channel of guild.channels.cache.filter(a => a.type === "text").values() as IterableIterator<TextChannel>)
+    for(const channel of guild.channels.cache.filter(a => a.type === "text").filter(channel => {
+            if(['416021132081364992', '700853136222584892', '456993120433733632', '362947188583563275'].includes(channel.id))
+                return false;
+            const perms = channel.permissionsFor(client.user!);
+            if(!perms)
+            {
+                console.warn(`Could not read permissions for channel ${channel.name}`);
+                return false;
+            }
+            return perms.has("READ_MESSAGE_HISTORY");
+        }).values() as IterableIterator<TextChannel>)
     {
-        console.log(`channel: ${channel.name}`);
-        let before: string | undefined = undefined;
+        const channelData = db[channel.id] ? db[channel.id] : (db[channel.id] = { emoji: {} });
+        channelData.name = channel.name;
+        if(channelData.complete)
+        {
+            console.log(`Skipping completed channel ${channel.name}`);
+            continue;
+        } else if(channelData.lastMessage)
+        {
+            console.log(`Resuming channel ${channel.name} before ${channelData.lastMessage}`);
+        } else
+        {
+            console.log(`Entering new channel ${channel.name}`);
+        }
+        const emoji = channelData.emoji;
+        const guildEmoji = guild.emojis.cache;
         do
         {
-            const result = await channel.messages.fetch({ limit: 100, before });
+            const result = await channel.messages.fetch({ limit: 100, before: channelData.lastMessage });
             const messages: IterableIterator<Message> = result.values();
             for(const message of messages)
             {
-                before = message.id;
+                channelData.lastMessage = message.id;
                 for(const match of message.content.match(emojiRegex) || [])
                 {
                     const emojiID = match.match(emojiRegexGroups)![2];
-                    emoji[emojiID] = (emoji[emojiID] || 0) + 1;
+                    const emojiObj = guildEmoji.get(emojiID);
+                    if(emojiObj)
+                        emoji[emojiObj.name] = (emoji[emojiObj.name] || 0) + 1;
                 }
                 for(const reaction of message.reactions.cache.values())
                 {
                     const emojiID = reaction.emoji.id;
                     if(emojiID !== null)
                     {
-                        emoji[emojiID] = (emoji[emojiID] || 0) + (reaction.count || 1);
+                        const emojiObj = guildEmoji.get(emojiID);
+                        if(emojiObj)
+                            emoji[emojiObj.name] = (emoji[emojiObj.name] || 0) + (reaction.count || 1);
                     }
                 }
             }
@@ -53,13 +85,12 @@ const args = arg({
                 console.log(`Final batch encountered ${result.size} items`);
                 break;
             }
-            console.log(`before: ${before}`);
+            console.log(`#${channel.name} :: before: ${channelData.lastMessage}`);
         } while(true);
+        channelData.complete = true;
+        // write out after each channel :aquachibi:
+        writeFileSync(dbPath, JSON.stringify(db));
     }
-    const guildEmoji = guild.emojis.cache;
-    console.log(Object.entries(emoji)
-        .filter(([id, ]) => guildEmoji.get(id))
-        .sort((a, b) => b[1] - a[1])
-        .map(([id, count]) => [ guildEmoji.get(id)!.name, count ]));
+    writeFileSync(dbPath, JSON.stringify(db));
     client.destroy();
 })(args["--login-token"], args["--guild-id"]);
